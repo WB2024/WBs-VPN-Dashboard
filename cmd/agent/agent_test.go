@@ -338,3 +338,22 @@ func TestLegacyPiholeCommandMapsToModes(t *testing.T) {
 		t.Fatalf("off -> %s", a.dns.Mode)
 	}
 }
+
+func TestLeavingPiholeModeRestoresTunnelDefaultRoute(t *testing.T) {
+	f := resolvedRunner(true)
+	a := dnsAgent(f, func(context.Context) error { return nil })
+	a.Execute(context.Background(), proto.Command{Type: proto.CmdDNSMode, Value: "pihole"})
+	for _, next := range []string{"nord", "split"} {
+		a.Execute(context.Background(), proto.Command{Type: proto.CmdDNSMode, Value: "pihole"})
+		a.Execute(context.Background(), proto.Command{Type: proto.CmdDNSMode, Value: next})
+		last := ""
+		for _, c := range f.calls {
+			if strings.HasPrefix(c, "resolvectl default-route nordlynx") {
+				last = c
+			}
+		}
+		if last != "resolvectl default-route nordlynx yes" {
+			t.Fatalf("pihole -> %s left the tunnel link as %q", next, last)
+		}
+	}
+}

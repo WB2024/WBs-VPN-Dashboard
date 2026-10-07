@@ -146,7 +146,11 @@ func (a *Agent) applyDNS(ctx context.Context, mode string, connected bool) error
 	case proto.DNSNord:
 		a.nord(ctx, "set", "dns", "off")
 		a.nord(ctx, "allowlist", "remove", "port", "53")
-		return a.restoreLink(ctx)
+		err := a.restoreLink(ctx)
+		if connected && a.resolvedUp(ctx) {
+			a.run.Run(ctx, "resolvectl", "default-route", nordLink, "yes") // undo pihole mode's change to the tunnel link
+		}
+		return err
 	case proto.DNSSplit, proto.DNSPihole:
 		if len(a.piholeIPs) == 0 {
 			return errors.New("no Pi-hole addresses configured (PIHOLE_DNS)")
@@ -183,6 +187,8 @@ func (a *Agent) applyDNS(ctx context.Context, mode string, connected bool) error
 		}
 		if mode == proto.DNSPihole {
 			a.run.Run(ctx, "resolvectl", "default-route", nordLink, "no") // the LAN link becomes the only catch-all
+		} else {
+			a.run.Run(ctx, "resolvectl", "default-route", nordLink, "yes") // split: Nord's tunnel link stays the catch-all
 		}
 		a.run.Run(ctx, "resolvectl", "flush-caches")
 		return nil
