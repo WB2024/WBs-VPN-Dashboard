@@ -50,7 +50,8 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF2
   systemctl daemon-reload
-  systemctl enable --now wbs-vpn-agent
+  systemctl enable wbs-vpn-agent >/dev/null 2>&1
+  systemctl restart wbs-vpn-agent
   echo "==> agent installed and running (systemctl status wbs-vpn-agent)"
 else
   echo "==> no systemd here: run it yourself with: set -a; . /etc/wbs-vpn-agent.env; set +a; /usr/local/bin/wbs-vpn-agent"
