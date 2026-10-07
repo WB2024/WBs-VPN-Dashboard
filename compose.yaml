@@ -4,6 +4,7 @@ services:
   wbs-vpn-dashboard:
     image: wb20244/wbs-vpn-dashboard:${TAG:-latest}
     container_name: wbs-vpn-dashboard
+    network_mode: bridge   # single container: avoids creating a per-stack network (the services LXC has exhausted Docker's address pools)
     environment:
       - API_KEY=${API_KEY}
       - PUBLIC_URL=${PUBLIC_URL:-http://192.168.1.110:3010}
