@@ -48,6 +48,7 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	s := &Server{store: st, apiKey: apiKey, agentDir: env("AGENT_DIR", "/app/agents"), public: strings.TrimRight(os.Getenv("PUBLIC_URL"), "/")}
+	go s.runGluetunLoop()
 	addr := env("LISTEN", ":8080")
 	log.Printf("wbs-vpn-dashboard panel listening on %s (%d devices)", addr, len(st.List()))
 	srv := &http.Server{Addr: addr, Handler: s.routes(), ReadHeaderTimeout: 10 * time.Second}
@@ -135,9 +136,34 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addDevice(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Name string }
+	var in struct {
+		Name, Kind, URL string
+		APIKey          string `json:"api_key"`
+	}
 	if json.NewDecoder(r.Body).Decode(&in) != nil || !nameRe.MatchString(in.Name) {
 		fail(w, http.StatusBadRequest, "name must be 1-40 characters: letters, digits, space, . _ -")
+		return
+	}
+	if in.Kind == kindGluetun {
+		base, err := validGluetunURL(in.URL)
+		if err != nil || len(in.APIKey) < 8 {
+			if err == nil {
+				err = errors.New("api_key is required")
+			}
+			fail(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// prove the URL and key work before saving the device
+		if gi := newGluetun(gluetunTarget{URL: base, Key: in.APIKey}).info(); gi.Err != nil {
+			fail(w, http.StatusBadGateway, "could not reach Gluetun: "+gi.Err.Error())
+			return
+		}
+		d, err := s.store.AddGluetun(in.Name, base, in.APIKey)
+		if err != nil {
+			fail(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"device": d})
 		return
 	}
 	d, token, err := s.store.Add(in.Name)
@@ -203,6 +229,20 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c = proto.Command{Type: c.Type, Country: c.Country, Value: c.Value}
+	if tg, ok := s.store.Target(r.PathValue("id")); ok { // a Gluetun container: only connect / disconnect make sense
+		if c.Type != proto.CmdConnect && c.Type != proto.CmdDisconnect {
+			fail(w, http.StatusBadRequest, "this device is a Gluetun container: only connect and disconnect are supported")
+			return
+		}
+		queued, err := s.store.BeginExec(tg.ID, c)
+		if err != nil {
+			fail(w, http.StatusConflict, err.Error())
+			return
+		}
+		go s.execGluetun(tg, queued)
+		writeJSON(w, http.StatusAccepted, queued)
+		return
+	}
 	queued, err := s.store.Enqueue(r.PathValue("id"), c)
 	switch {
 	case errors.Is(err, errNotFound):

@@ -50,6 +50,19 @@ cp .env.example .env          # set API_KEY (openssl rand -hex 24) and PUBLIC_UR
 docker compose up -d          # panel on :3010
 ```
 
+## Containers behind Gluetun (servers and Docker hosts)
+
+Do not run the Nord client on a Proxmox host or a Docker host: while connected, Nord's firewall drops forwarded traffic (published container ports,
+VM bridges), and a full tunnel is wrong for servers anyway. Put only the apps that need a VPN behind a [Gluetun](https://github.com/qdm12/gluetun)
+container instead (`examples/gluetun-qbittorrent`: qBittorrent shares Gluetun's network, so it has no route except the tunnel).
+The panel controls Gluetun directly through its HTTP API, no agent needed:
+
+* **Add Gluetun** in the panel (or `POST /api/v1/devices` with `{"name","kind":"gluetun","url","api_key"}`). The URL must be a private address; it is checked at add time and on every call.
+* **Connect / Switch** sets the country (`PUT /v1/vpn/settings`, no container recreate) and waits until the tunnel is up in that country; **Stop VPN** stops the tunnel, and the container then has no internet.
+* Status (connected, country, exit IP) is polled every 5 s. Kill switch, Tailscale and DNS modes do not apply and are not offered.
+* Nord offers no port forwarding, so incoming peer connections do not work behind it; outgoing traffic is normal.
+* `devices.json` holds the Gluetun API keys, so it is mode 0600 and keys are never returned by the API.
+
 ## Add a device
 
 In the panel click **Add device**, then run the one-line command it shows on that machine:

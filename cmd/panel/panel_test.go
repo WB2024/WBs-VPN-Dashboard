@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/WB2024/WBs-VPN-Dashboard/internal/proto"
 )
@@ -183,5 +184,135 @@ func TestDNSModeValidation(t *testing.T) {
 		if w := do(h, "POST", path, testKey, proto.Command{Type: "dns_mode", Value: v}); w.Code != 400 {
 			t.Errorf("%q must be rejected: %d", v, w.Code)
 		}
+	}
+}
+
+// ---- Gluetun devices ---------------------------------------------------------------------------------------------
+
+type fakeGluetun struct {
+	status  string
+	country string // gluetun form, e.g. "united kingdom"
+	puts    []string
+}
+
+func (f *fakeGluetun) handler(key string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != key {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v1/vpn/status":
+			w.Write([]byte(`{"status":"` + f.status + `"}`))
+		case "GET /v1/vpn/settings":
+			w.Write([]byte(`{"provider":{"server_selection":{"countries":["` + f.country + `"]}}}`))
+		case "GET /v1/publicip/ip":
+			c := strings.Title(f.country)
+			w.Write([]byte(`{"public_ip":"1.2.3.4","country":"` + c + `","city":"London"}`))
+		case "PUT /v1/vpn/status":
+			var b struct{ Status string }
+			json.NewDecoder(r.Body).Decode(&b)
+			f.status = b.Status
+			f.puts = append(f.puts, "status:"+b.Status)
+			w.Write([]byte(`{}`))
+		case "PUT /v1/vpn/settings":
+			var b struct {
+				Provider struct {
+					ServerSelection struct{ Countries []string } `json:"server_selection"`
+				}
+			}
+			json.NewDecoder(r.Body).Decode(&b)
+			f.country = b.Provider.ServerSelection.Countries[0]
+			f.puts = append(f.puts, "country:"+f.country)
+			w.Write([]byte(`ok`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+func TestGluetunDeviceLifecycle(t *testing.T) {
+	fg := &fakeGluetun{status: "running", country: "united kingdom"}
+	ts := httptest.NewServer(fg.handler("gluetun-key-123"))
+	defer ts.Close()
+	_, h := newTestServer(t)
+
+	if w := do(h, "POST", "/api/v1/devices", testKey, map[string]string{"name": "qbit", "kind": "gluetun", "url": ts.URL, "api_key": "wrong-key-1234"}); w.Code != 502 {
+		t.Fatalf("a bad Gluetun key must be refused before saving: %d %s", w.Code, w.Body)
+	}
+	if w := do(h, "POST", "/api/v1/devices", testKey, map[string]string{"name": "qbit", "kind": "gluetun", "url": "http://8.8.8.8:8000", "api_key": "gluetun-key-123"}); w.Code != 400 {
+		t.Fatalf("public addresses must be refused: %d", w.Code)
+	}
+	w := do(h, "POST", "/api/v1/devices", testKey, map[string]string{"name": "qbit", "kind": "gluetun", "url": ts.URL, "api_key": "gluetun-key-123"})
+	if w.Code != 201 {
+		t.Fatalf("add: %d %s", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), "gluetun-key-123") || strings.Contains(w.Body.String(), "api_key") {
+		t.Fatal("the Gluetun API key must never be returned")
+	}
+	var added struct{ Device DeviceView }
+	json.Unmarshal(w.Body.Bytes(), &added)
+	id := added.Device.ID
+	if added.Device.Kind != "gluetun" {
+		t.Fatalf("kind: %+v", added.Device)
+	}
+
+	// unsupported commands are rejected
+	for _, c := range []proto.Command{{Type: "killswitch", Value: "on"}, {Type: "dns_mode", Value: "split"}, {Type: "tailscale", Value: "on"}} {
+		if w := do(h, "POST", "/api/v1/devices/"+id+"/command", testKey, c); w.Code != 400 {
+			t.Errorf("%s must be rejected for gluetun: %d", c.Type, w.Code)
+		}
+	}
+	// switch country; the fake answers with the new country straight away
+	if w := do(h, "POST", "/api/v1/devices/"+id+"/command", testKey, proto.Command{Type: "connect", Country: "Germany"}); w.Code != 202 {
+		t.Fatalf("connect: %d %s", w.Code, w.Body)
+	}
+	var v DeviceView
+	for i := 0; i < 80; i++ {
+		time.Sleep(100 * time.Millisecond)
+		v = deviceView(t, h, id)
+		if v.Inflight == nil && len(v.Results) > 0 {
+			break
+		}
+	}
+	if len(v.Results) == 0 || !v.Results[0].OK || !strings.Contains(v.Results[0].Message, "Germany") {
+		t.Fatalf("result: %+v", v.Results)
+	}
+	if fg.country != "germany" || fg.status != "running" {
+		t.Fatalf("gluetun state: %+v", fg)
+	}
+}
+
+func deviceView(t *testing.T, h http.Handler, id string) DeviceView {
+	t.Helper()
+	w := do(h, "GET", "/api/v1/devices", testKey, nil)
+	var out struct{ Devices []DeviceView }
+	json.Unmarshal(w.Body.Bytes(), &out)
+	for _, d := range out.Devices {
+		if d.ID == id {
+			return d
+		}
+	}
+	t.Fatal("device missing")
+	return DeviceView{}
+}
+
+func TestGluetunStatusMapping(t *testing.T) {
+	st := gluetunStatus(gluetunInfo{Running: true, IP: "1.2.3.4", Country: "Germany", City: "Frankfurt"})
+	if !st.Connected || st.Country != "Germany" || !st.KillSwitch || st.Tailscale != "absent" {
+		t.Fatalf("%+v", st)
+	}
+	if st := gluetunStatus(gluetunInfo{Running: false}); st.Connected {
+		t.Fatalf("a stopped VPN is not connected: %+v", st)
+	}
+	if gluetunCountry("United_Kingdom") != "united kingdom" {
+		t.Fatal("country mapping")
+	}
+}
+
+func TestSafeClientRefusesPublicAddresses(t *testing.T) {
+	c := safeClient(2 * time.Second)
+	if _, err := c.Get("http://1.1.1.1/"); err == nil || !strings.Contains(err.Error(), "non-private") {
+		t.Fatalf("must refuse a public address, got %v", err)
 	}
 }

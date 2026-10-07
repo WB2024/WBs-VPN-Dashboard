@@ -17,6 +17,8 @@ import (
 )
 
 const (
+	kindAgent    = "agent"
+	kindGluetun  = "gluetun"
 	onlineWindow = 60 // seconds without a poll before a device shows as offline
 	maxQueued    = 5
 	maxResults   = 8
@@ -27,6 +29,9 @@ type Device struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	TokenHash string          `json:"token_hash"`
+	Kind      string          `json:"kind,omitempty"`    // "" / "agent" or "gluetun"
+	URL       string          `json:"url,omitempty"`     // gluetun control API base URL
+	APIKey    string          `json:"api_key,omitempty"` // gluetun control API key (file is 0600; never sent to clients)
 	Created   int64           `json:"created"`
 	LastSeen  int64           `json:"last_seen"`
 	Status    *proto.Status   `json:"status,omitempty"`
@@ -39,6 +44,7 @@ type Device struct {
 type DeviceView struct {
 	ID       string          `json:"id"`
 	Name     string          `json:"name"`
+	Kind     string          `json:"kind"`
 	Online   bool            `json:"online"`
 	LastSeen int64           `json:"last_seen"`
 	Status   *proto.Status   `json:"status,omitempty"`
@@ -109,7 +115,11 @@ func hashToken(t string) string {
 }
 
 func (d *Device) view(now int64) DeviceView {
-	v := DeviceView{ID: d.ID, Name: d.Name, LastSeen: d.LastSeen, Status: d.Status, Inflight: d.Inflight,
+	kind := d.Kind
+	if kind == "" {
+		kind = kindAgent
+	}
+	v := DeviceView{ID: d.ID, Name: d.Name, Kind: kind, LastSeen: d.LastSeen, Status: d.Status, Inflight: d.Inflight,
 		Online: d.LastSeen > 0 && now-d.LastSeen <= onlineWindow, Pending: d.Pending, Results: d.Results}
 	if v.Pending == nil {
 		v.Pending = []proto.Command{}
@@ -143,6 +153,9 @@ func (s *Store) Rotate(id string) (string, error) {
 	d, ok := s.devices[id]
 	if !ok {
 		return "", errNotFound
+	}
+	if d.Kind == kindGluetun {
+		return "", errors.New("Gluetun devices have no agent token")
 	}
 	token := randHex(24)
 	d.TokenHash = hashToken(token)
@@ -268,4 +281,93 @@ func (s *Store) Next(id string) *proto.Command {
 	d.Inflight = &c
 	_ = s.saveLocked()
 	return &c
+}
+
+// ---- gluetun devices (controlled through Gluetun's own HTTP API; no agent)
+
+func (s *Store) AddGluetun(name, url, key string) (DeviceView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.devices {
+		if d.Name == name {
+			return DeviceView{}, errors.New("a device with that name already exists")
+		}
+	}
+	d := &Device{ID: randHex(4), Name: name, Kind: kindGluetun, URL: url, APIKey: key, Created: s.now().Unix()}
+	s.devices[d.ID] = d
+	s.notify[d.ID] = make(chan struct{}, 1)
+	return d.view(s.now().Unix()), s.saveLocked()
+}
+
+type gluetunTarget struct{ ID, URL, Key string }
+
+func (s *Store) GluetunTargets() []gluetunTarget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []gluetunTarget
+	for _, d := range s.devices {
+		if d.Kind == kindGluetun {
+			out = append(out, gluetunTarget{d.ID, d.URL, d.APIKey})
+		}
+	}
+	return out
+}
+
+func (s *Store) Target(id string) (gluetunTarget, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.devices[id]
+	if !ok || d.Kind != kindGluetun {
+		return gluetunTarget{}, false
+	}
+	return gluetunTarget{d.ID, d.URL, d.APIKey}, true
+}
+
+// SetPolled records the outcome of a status poll. A failed poll keeps the old status (and LastSeen), so the device ages to offline.
+func (s *Store) SetPolled(id string, st proto.Status, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, found := s.devices[id]
+	if !found {
+		return
+	}
+	if ok {
+		d.Status = &st
+		d.LastSeen = s.now().Unix()
+	} else if d.Status != nil {
+		d.Status.Error = st.Error
+	} else {
+		d.Status = &st
+	}
+}
+
+// BeginExec marks a command as running (shown as "working") and returns it with an id.
+func (s *Store) BeginExec(id string, c proto.Command) (proto.Command, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.devices[id]
+	if !ok {
+		return c, errNotFound
+	}
+	if d.Inflight != nil {
+		return c, errors.New("a command is already running on this device")
+	}
+	c.ID, c.Created = randHex(4), s.now().Unix()
+	d.Inflight = &c
+	return c, nil
+}
+
+func (s *Store) FinishExec(id string, r proto.Result) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.devices[id]
+	if !ok {
+		return
+	}
+	d.Results = append([]proto.Result{r}, d.Results...)
+	if len(d.Results) > maxResults {
+		d.Results = d.Results[:maxResults]
+	}
+	d.Inflight = nil
+	_ = s.saveLocked()
 }

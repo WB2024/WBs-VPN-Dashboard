@@ -33,7 +33,7 @@
   <div id="app" hidden>
     <header>
       <h1>VPN Dashboard</h1>
-      <div class="row" style="margin:0"><input id="newname" placeholder="New device name" maxlength="40"><button class="primary" id="add">Add device</button><button id="logout">Sign out</button></div>
+      <div class="row" style="margin:0"><input id="newname" placeholder="New device name" maxlength="40"><button class="primary" id="add">Add device</button><button id="addgl" title="Add a container that runs behind a Gluetun VPN tunnel">Add Gluetun</button><button id="logout">Sign out</button></div>
     </header>
     <div id="notice"></div>
     <div class="grid" id="grid"></div>
@@ -57,8 +57,9 @@ const pretty = c => String(c || '').replace(/_/g, ' ');
 function ago(t) { if (!t) return 'never'; const s = Math.floor(Date.now()/1000) - t; return s < 90 ? s + 's ago' : s < 5400 ? Math.round(s/60) + 'm ago' : Math.round(s/3600) + 'h ago'; }
 
 function card(d) {
+  const gl = d.kind === 'gluetun';
   const s = d.status || {}, busy = d.inflight || d.pending.length;
-  const state = !d.online ? ['', 'offline'] : !s.nord_installed ? ['idle', 'Nord not installed'] : s.connected ? ['on', 'Connected · ' + pretty(s.country) + (s.city ? ', ' + esc(s.city) : '')] : ['idle', 'Disconnected'];
+  const state = !d.online ? ['', gl ? 'Gluetun unreachable' : 'offline'] : !s.nord_installed ? ['idle', 'Nord not installed'] : s.connected ? ['on', 'Connected · ' + pretty(s.country) + (s.city ? ', ' + esc(s.city) : '')] : ['idle', 'Disconnected'];
   const last = d.results[0];
   const opts = countries.map(c => `<option value="${c}" ${s.country && pretty(s.country) === pretty(c) ? 'selected' : ''}>${pretty(c)}</option>`).join('');
   const dis = (!d.online || !s.nord_installed) ? 'disabled' : '';
@@ -66,8 +67,9 @@ function card(d) {
     <div class="name"><span class="dot ${state[0]}"></span>${esc(d.name)}</div>
     <div class="dim">${state[1]} · seen ${ago(d.last_seen)}${s.ip ? ' · ' + esc(s.ip) : ''}</div>
     <div class="row"><select class="country" ${dis}>${opts}</select>
-      <button class="primary act" data-t="connect" ${dis}>Connect</button><button class="act" data-t="disconnect" ${dis}>Disconnect</button></div>
-    <div class="row">
+      <button class="primary act" data-t="connect" ${dis}>${s.connected ? 'Switch' : 'Connect'}</button><button class="act" data-t="disconnect" ${dis}>${gl ? 'Stop VPN' : 'Disconnect'}</button></div>
+    ${gl ? '<div class="msg dim">Container behind a Gluetun tunnel: if the VPN is stopped it has no internet (kill switch).</div>' : ''}
+    <div class="row" ${gl ? 'hidden' : ''}>
       <label class="tog"><input type="checkbox" class="tgl" data-t="killswitch" ${s.kill_switch ? 'checked' : ''} ${dis}> Kill switch</label>
       <label class="tog">DNS <select class="dnsmode" ${dis} title="How name lookups are handled while connected. 'local names' keeps your *.lan names working with Nord's private DNS for the internet; 'Pi-hole' sends everything to your Pi-holes (lookups leave via home).">
         <option value="nord" ${(s.dns_mode || 'nord') === 'nord' ? 'selected' : ''}>Nord DNS</option>
@@ -77,7 +79,7 @@ function card(d) {
     </div>
     ${busy ? '<div class="msg dim">Working…</div>' : last ? `<div class="msg ${last.ok ? 'dim' : 'err'}">${esc(last.message)} · ${ago(last.at)}</div>` : ''}
     ${s.error ? `<div class="msg err">${esc(s.error)}</div>` : ''}
-    <div class="row"><button class="rot">New install token</button><button class="del">Remove</button></div>
+    <div class="row">${gl ? '' : '<button class="rot">New install token</button>'}<button class="del">Remove</button></div>
     <div class="out"></div>
   </div>`;
 }
@@ -115,6 +117,13 @@ $('#add').onclick = async () => {
     $('#notice').innerHTML = `<div class="card" style="margin-bottom:12px"><div class="name">${esc(j.device.name)} added</div><div class="dim">Run this once on the device. The token is shown only now.</div><code>${esc(j.install)}</code></div>`;
     load();
   } catch (e) { alert(e.message); }
+};
+$('#addgl').onclick = async () => {
+  const name = prompt('Name for this container (e.g. qbittorrent):'); if (!name) return;
+  const url = prompt('Gluetun control API address (e.g. http://192.168.1.110:18010):'); if (!url) return;
+  const api_key = prompt('Gluetun control API key:'); if (!api_key) return;
+  try { await api('/api/v1/devices', 'POST', { name: name.trim(), kind: 'gluetun', url: url.trim(), api_key: api_key.trim() }); load(); }
+  catch (e) { alert(e.message); }
 };
 $('#go').onclick = () => { key = $('#key').value.trim(); store.set(key); show(true); };
 $('#logout').onclick = () => { key = ''; store.set(''); show(false); };

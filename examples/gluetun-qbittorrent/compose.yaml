@@ -1,0 +1,52 @@
+# qBittorrent behind a Nord WireGuard tunnel (Gluetun). qBittorrent shares Gluetun's network namespace, so it has no route
+# except the tunnel (Gluetun's firewall is the kill switch). The web UI is still published on the host as :8082.
+# Gluetun is on the default bridge: the services LXC has exhausted Docker's address pools, so a new network cannot be created.
+# Nord offers no port forwarding, so incoming peer connections are not possible (outgoing works normally).
+services:
+  gluetun:
+    image: qmcgaw/gluetun:v3
+    container_name: gluetun-qbittorrent
+    network_mode: bridge
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TZ=Europe/London
+      - VPN_SERVICE_PROVIDER=nordvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - SERVER_COUNTRIES=${VPN_COUNTRY:-United Kingdom}
+      - FIREWALL_OUTBOUND_SUBNETS=192.168.1.0/24,100.64.0.0/10   # LAN (arrs, browsers) and Tailscale stay reachable
+      - HTTP_CONTROL_SERVER_ADDRESS=:8000
+      - 'HTTP_CONTROL_SERVER_AUTH_DEFAULT_ROLE={"auth":"apikey","apikey":"${GLUETUN_API_KEY}"}'
+    ports:
+      - "${WEBUI_HOST_PORT:-8082}:8082"   # qBittorrent web UI (same host port as before)
+      - "18010:8000"  # Gluetun control API (API key required)
+    volumes:
+      - ./gluetun:/gluetun
+    cpus: 1
+    mem_limit: 256m
+    restart: unless-stopped
+
+  qbittorrent:
+    image: linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      - PUID=1000
+      - PGID=100
+      - UMASK=002
+      - TZ=Europe/London
+      - WEBUI_PORT=8082
+    volumes:
+      - ./config:/config
+      # The same host folder SABnzbd sees as /data, so both agree where files are
+      # (RustyBox maps /data to /data/main20tb).
+      - /mnt/Main20TB:/data
+    cpus: 2
+    mem_limit: 2g
+    restart: unless-stopped
