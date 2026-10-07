@@ -26,11 +26,25 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) (string,
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	// The Nord CLI refuses to run without a real home directory; service users often have none.
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "TERM=dumb")
+	if h := os.Getenv("HOME"); h == "" || h == "/nonexistent" {
+		cmd.Env = append(cmd.Env, "HOME="+stateHome())
+	}
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	err := cmd.Run()
 	return cleanOutput(buf.String()), err
+}
+
+// stateHome returns a writable directory to use as HOME when the service has none.
+func stateHome() string {
+	for _, d := range []string{"/var/lib/wbs-vpn", os.TempDir()} {
+		if st, err := os.Stat(d); err == nil && st.IsDir() {
+			return d
+		}
+	}
+	return "/tmp"
 }
 
 // cleanOutput strips the spinner / control characters the Nord CLI prints and trims whitespace.
@@ -79,8 +93,12 @@ func readStatus(ctx context.Context, r Runner, piholeIPs []string) proto.Status 
 		return st
 	}
 	st.NordInstalled = true
-	if v, err := r.Run(ctx, "nordvpn", "--version"); err == nil {
+	v, verr := r.Run(ctx, "nordvpn", "--version")
+	if verr == nil {
 		st.Version = strings.TrimPrefix(v, "NordVPN Version ")
+	} else {
+		st.Error = "nordvpn: " + firstLine(v, verr)
+		return st
 	}
 	out, err := r.Run(ctx, "nordvpn", "status")
 	if err != nil && out == "" {
@@ -97,7 +115,11 @@ func readStatus(ctx context.Context, r Runner, piholeIPs []string) proto.Status 
 	} else if strings.Contains(strings.ToLower(out), "log in") || strings.Contains(strings.ToLower(out), "not logged in") {
 		st.Error = "nordvpn is not logged in on this device"
 	}
-	if set, err := r.Run(ctx, "nordvpn", "settings"); err == nil {
+	if set, err := r.Run(ctx, "nordvpn", "settings"); err != nil {
+		if st.Error == "" {
+			st.Error = "nordvpn settings: " + firstLine(set, err)
+		}
+	} else {
 		sm := kv(set)
 		st.KillSwitch = strings.EqualFold(sm["kill switch"], "enabled")
 		dns := sm["dns"]

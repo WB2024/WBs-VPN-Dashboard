@@ -157,3 +157,12 @@ func TestMissingNordReported(t *testing.T) {
 		t.Fatalf("got %+v", r)
 	}
 }
+
+func TestReadStatusSurfacesCLIErrors(t *testing.T) {
+	f := &fakeRunner{has: map[string]bool{"nordvpn": true}, responses: map[string]string{
+		"nordvpn --version": "ERR:[Fatal] cannot get user home dir"}}
+	st := readStatus(context.Background(), f, nil)
+	if !strings.Contains(st.Error, "cannot get user home dir") {
+		t.Fatalf("CLI error must reach the panel, got %+v", st)
+	}
+}

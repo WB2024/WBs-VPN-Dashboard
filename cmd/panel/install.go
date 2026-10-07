@@ -35,6 +35,8 @@ Wants=network-online.target
 
 [Service]
 User=wbs-vpn
+StateDirectory=wbs-vpn
+Environment=HOME=/var/lib/wbs-vpn
 EnvironmentFile=/etc/wbs-vpn-agent.env
 ExecStart=/usr/local/bin/wbs-vpn-agent
 Restart=always
