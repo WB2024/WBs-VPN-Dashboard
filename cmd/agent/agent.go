@@ -33,12 +33,18 @@ type Agent struct {
 	lastConn   time.Time
 	backoffTil time.Time
 	baselined  bool
+
+	dns          dnsState // desired DNS mode and what was changed on the LAN link
+	stateFile    string   // persists dns across restarts ('' = memory only)
+	localDomains []string // domains routed to the Pi-holes in split mode
+	localCheck   string   // optional local name that must resolve in split/pihole mode
 }
 
 func NewAgent(r Runner, panelURL string, subnets, pihole []string) *Agent {
 	a := &Agent{run: r, panelURL: strings.TrimRight(panelURL, "/"), subnets: subnets, piholeIPs: pihole,
 		http: &http.Client{Timeout: 40 * time.Second}, now: time.Now, sleep: time.Sleep}
 	a.healthy = a.defaultHealthy
+	a.dns.Mode = proto.DNSNord
 	return a
 }
 
@@ -54,6 +60,11 @@ func (a *Agent) defaultHealthy(ctx context.Context) error {
 	defer cancel()
 	if _, err := net.DefaultResolver.LookupHost(rctx, "example.com"); err != nil {
 		return fmt.Errorf("DNS not working: %w", err)
+	}
+	if a.localCheck != "" && a.dns.Mode != proto.DNSNord {
+		if _, err := net.DefaultResolver.LookupHost(rctx, a.localCheck); err != nil {
+			return fmt.Errorf("local name %s does not resolve: %w", a.localCheck, err)
+		}
 	}
 	resp, err = c.Get("https://example.com")
 	if err != nil {
@@ -97,8 +108,10 @@ func (a *Agent) Execute(ctx context.Context, c proto.Command) proto.Result {
 		msg, err = a.disconnect(ctx)
 	case proto.CmdKillSwitch:
 		msg, err = a.killSwitch(ctx, c.Value == "on")
-	case proto.CmdPiholeDNS:
-		msg, err = a.piholeDNS(ctx, c.Value == "on")
+	case proto.CmdDNSMode:
+		msg, err = a.setDNSMode(ctx, c.Value)
+	case proto.CmdPiholeDNS: // legacy on/off
+		msg, err = a.setDNSMode(ctx, map[bool]string{true: proto.DNSPihole, false: proto.DNSNord}[c.Value == "on"])
 	case proto.CmdTailscale:
 		msg, err = a.tailscale(ctx, c.Value == "on")
 	default:
@@ -138,6 +151,12 @@ func (a *Agent) connect(ctx context.Context, country string) (string, error) {
 	if err != nil || !strings.Contains(strings.ToLower(out), "connected to") {
 		return "", fmt.Errorf("connect failed: %s", firstLine(out, err))
 	}
+	if a.dns.Mode != proto.DNSNord {
+		if err := a.applyDNS(ctx, a.dns.Mode, true); err != nil {
+			a.disconnect(ctx)
+			return "", fmt.Errorf("rolled back: DNS mode %s could not be applied: %v", a.dns.Mode, err)
+		}
+	}
 	// Safety net: the new tunnel must keep the panel, DNS and internet reachable, or we undo it.
 	deadline := a.now().Add(verifyWindow)
 	var herr error
@@ -164,6 +183,7 @@ func (a *Agent) disconnect(ctx context.Context) (string, error) {
 	if err != nil && !strings.Contains(strings.ToLower(out), "already disconnected") {
 		return "", fmt.Errorf("disconnect failed: %s", firstLine(out, err))
 	}
+	a.restoreLink(ctx)
 	return "disconnected", nil
 }
 
@@ -182,34 +202,6 @@ func (a *Agent) killSwitch(ctx context.Context, on bool) (string, error) {
 		return "", fmt.Errorf("kill switch: %s", firstLine(out, err))
 	}
 	return "kill switch " + v, nil
-}
-
-func (a *Agent) piholeDNS(ctx context.Context, on bool) (string, error) {
-	if err := a.requireNord(); err != nil {
-		return "", err
-	}
-	if len(a.piholeIPs) == 0 {
-		return "", errors.New("no Pi-hole addresses configured (PIHOLE_DNS)")
-	}
-	if on {
-		a.nord(ctx, "allowlist", "add", "port", "53") // Nord otherwise drops port 53 to the LAN while connected
-		args := append([]string{"set", "dns"}, a.piholeIPs...)
-		if out, err := a.nord(ctx, args...); err != nil {
-			return "", fmt.Errorf("set dns: %s", firstLine(out, err))
-		}
-	} else {
-		a.nord(ctx, "set", "dns", "off")
-		a.nord(ctx, "allowlist", "remove", "port", "53")
-	}
-	if st, _ := a.nord(ctx, "status"); strings.EqualFold(kv(st)["status"], "connected") {
-		a.sleep(3 * time.Second)
-		if err := a.healthy(ctx); err != nil {
-			a.nord(ctx, "set", "dns", "off")
-			a.nord(ctx, "allowlist", "remove", "port", "53")
-			return "", fmt.Errorf("reverted: DNS check failed with Pi-hole DNS (%v)", err)
-		}
-	}
-	return "Pi-hole DNS " + map[bool]string{true: "on", false: "off"}[on], nil
 }
 
 func (a *Agent) tailscale(ctx context.Context, on bool) (string, error) {

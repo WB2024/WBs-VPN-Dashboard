@@ -49,6 +49,19 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF2
+  if command -v resolvectl >/dev/null 2>&1 && [ -d /etc/polkit-1/rules.d ]; then
+    # lets the agent adjust per-link DNS routing in systemd-resolved (nothing else), used by the DNS modes
+    cat > /etc/polkit-1/rules.d/50-wbs-vpn-agent.rules <<'EOF2'
+polkit.addRule(function(action, subject) {
+  if (subject.user == "wbs-vpn" &&
+      (action.id == "org.freedesktop.resolve1.set-domains" ||
+       action.id == "org.freedesktop.resolve1.set-default-route" ||
+       action.id == "org.freedesktop.resolve1.flush-caches")) {
+    return polkit.Result.YES;
+  }
+});
+EOF2
+  fi
   systemctl daemon-reload
   systemctl enable wbs-vpn-agent >/dev/null 2>&1
   systemctl restart wbs-vpn-agent

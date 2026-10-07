@@ -167,3 +167,21 @@ func TestDownloadRejectsPathTricks(t *testing.T) {
 		}
 	}
 }
+
+func TestDNSModeValidation(t *testing.T) {
+	_, h := newTestServer(t)
+	w := do(h, "POST", "/api/v1/devices", testKey, map[string]string{"name": "dnsbox"})
+	var added struct{ Device DeviceView }
+	json.Unmarshal(w.Body.Bytes(), &added)
+	path := "/api/v1/devices/" + added.Device.ID + "/command"
+	for _, v := range []string{"nord", "split", "pihole"} {
+		if w := do(h, "POST", path, testKey, proto.Command{Type: "dns_mode", Value: v}); w.Code != 202 {
+			t.Errorf("%s: %d %s", v, w.Code, w.Body)
+		}
+	}
+	for _, v := range []string{"", "on", "all", "pihole; reboot"} {
+		if w := do(h, "POST", path, testKey, proto.Command{Type: "dns_mode", Value: v}); w.Code != 400 {
+			t.Errorf("%q must be rejected: %d", v, w.Code)
+		}
+	}
+}

@@ -6,8 +6,16 @@ const (
 	CmdConnect    = "connect"    // Value unused, Country required
 	CmdDisconnect = "disconnect" //
 	CmdKillSwitch = "killswitch" // Value: on|off
-	CmdPiholeDNS  = "pihole_dns" // Value: on|off  (Nord uses the Pi-holes while connected)
+	CmdPiholeDNS  = "pihole_dns" // Value: on|off  (legacy: on = pihole mode, off = nord mode)
+	CmdDNSMode    = "dns_mode"   // Value: nord | split | pihole (see DNS* constants)
 	CmdTailscale  = "tailscale"  // Value: on|off
+)
+
+// DNS modes: how name lookups are handled while the VPN is connected.
+const (
+	DNSNord   = "nord"   // Nord's DNS for everything (most private; local names do not resolve)
+	DNSSplit  = "split"  // Nord's DNS for the internet, the Pi-holes for local domains only (needs systemd-resolved)
+	DNSPihole = "pihole" // the Pi-holes for everything (ad blocking; lookups leave through the home connection)
 )
 
 // Status is what an agent reports about its device on every poll.
@@ -20,7 +28,8 @@ type Status struct {
 	IP            string `json:"ip,omitempty"`
 	Technology    string `json:"technology,omitempty"`
 	KillSwitch    bool   `json:"kill_switch"`
-	PiholeDNS     bool   `json:"pihole_dns"`
+	PiholeDNS     bool   `json:"pihole_dns"` // legacy: DNSMode == pihole
+	DNSMode       string `json:"dns_mode,omitempty"`
 	Tailscale     string `json:"tailscale"` // up | down | absent
 	Version       string `json:"version,omitempty"`
 	Hostname      string `json:"hostname,omitempty"`

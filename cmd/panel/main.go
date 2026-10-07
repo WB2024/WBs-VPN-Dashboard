@@ -182,6 +182,10 @@ func validate(c proto.Command) error {
 		if c.Value != "on" && c.Value != "off" {
 			return errors.New("value must be on or off")
 		}
+	case proto.CmdDNSMode:
+		if c.Value != proto.DNSNord && c.Value != proto.DNSSplit && c.Value != proto.DNSPihole {
+			return errors.New("dns mode must be nord, split or pihole")
+		}
 	default:
 		return errors.New("unknown command type")
 	}

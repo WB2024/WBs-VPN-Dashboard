@@ -44,6 +44,10 @@ func main() {
 	subnets := split(getenv("ALLOW_SUBNETS", "192.168.1.0/24,100.64.0.0/10"))
 	pihole := split(getenv("PIHOLE_DNS", "192.168.1.53,192.168.1.54"))
 	a := NewAgent(execRunner{}, panel, subnets, pihole)
+	a.localDomains = split(getenv("LOCAL_DOMAINS", "wbhomelab,1.168.192.in-addr.arpa"))
+	a.localCheck = os.Getenv("LOCAL_CHECK")
+	a.stateFile = getenv("STATE_FILE", "/var/lib/wbs-vpn/state.json")
+	a.loadState()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -56,7 +60,10 @@ func (a *Agent) Loop(ctx context.Context, token string) {
 	var last *proto.Result
 	fails := 0
 	for ctx.Err() == nil {
-		resp, err := a.poll(ctx, token, proto.PollRequest{Status: readStatus(ctx, a.run, a.piholeIPs), LastResult: last})
+		st := readStatus(ctx, a.run, a.piholeIPs)
+		st.DNSMode = a.dns.Mode
+		st.PiholeDNS = a.dns.Mode == proto.DNSPihole
+		resp, err := a.poll(ctx, token, proto.PollRequest{Status: st, LastResult: last})
 		if err != nil {
 			fails++
 			wait := time.Duration(min(fails, 12)) * 5 * time.Second

@@ -69,7 +69,10 @@ function card(d) {
       <button class="primary act" data-t="connect" ${dis}>Connect</button><button class="act" data-t="disconnect" ${dis}>Disconnect</button></div>
     <div class="row">
       <label class="tog"><input type="checkbox" class="tgl" data-t="killswitch" ${s.kill_switch ? 'checked' : ''} ${dis}> Kill switch</label>
-      <label class="tog"><input type="checkbox" class="tgl" data-t="pihole_dns" ${s.pihole_dns ? 'checked' : ''} ${dis}> Pi-hole DNS</label>
+      <label class="tog">DNS <select class="dnsmode" ${dis} title="How name lookups are handled while connected. 'local names' keeps your *.lan names working with Nord's private DNS for the internet; 'Pi-hole' sends everything to your Pi-holes (lookups leave via home).">
+        <option value="nord" ${(s.dns_mode || 'nord') === 'nord' ? 'selected' : ''}>Nord DNS</option>
+        <option value="split" ${s.dns_mode === 'split' ? 'selected' : ''}>Local names via Pi-hole</option>
+        <option value="pihole" ${s.dns_mode === 'pihole' ? 'selected' : ''}>Pi-hole for everything</option></select></label>
       <label class="tog"><input type="checkbox" class="tgl" data-t="tailscale" ${s.tailscale === 'up' ? 'checked' : ''} ${(!d.online || s.tailscale === 'absent') ? 'disabled' : ''}> Tailscale</label>
     </div>
     ${busy ? '<div class="msg dim">Working…</div>' : last ? `<div class="msg ${last.ok ? 'dim' : 'err'}">${esc(last.message)} · ${ago(last.at)}</div>` : ''}
@@ -101,6 +104,7 @@ $('#grid').addEventListener('click', async e => {
   }
 });
 $('#grid').addEventListener('change', e => {
+  if (e.target.classList.contains('dnsmode')) { send(e.target.closest('.card').dataset.id, { type: 'dns_mode', value: e.target.value }); return; }
   if (!e.target.classList.contains('tgl')) return;
   send(e.target.closest('.card').dataset.id, { type: e.target.dataset.t, value: e.target.checked ? 'on' : 'off' });
 });
