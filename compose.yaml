@@ -1,0 +1,16 @@
+# Deploy on the services LXC under Dockge: /opt/stacks/wbs-vpn-dashboard/compose.yaml
+# .env (mode 600) provides API_KEY (openssl rand -hex 24) and PUBLIC_URL.
+services:
+  wbs-vpn-dashboard:
+    image: wb20244/wbs-vpn-dashboard:${TAG:-latest}
+    container_name: wbs-vpn-dashboard
+    environment:
+      - API_KEY=${API_KEY}
+      - PUBLIC_URL=${PUBLIC_URL:-http://192.168.1.110:3010}
+    ports:
+      - 3010:8080
+    volumes:
+      - /opt/wbs-vpn-dashboard/data:/data
+    cpus: 0.5
+    mem_limit: 64m
+    restart: unless-stopped

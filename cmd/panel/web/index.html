@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VPN Dashboard</title>
+<style>
+  :root { --bg:#16161a; --card:#202026; --line:#33333d; --fg:#e6e6ea; --dim:#8b8b97; --ok:#4ade80; --bad:#f87171; --acc:#e0b24a; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f4f4f6; --card:#fff; --line:#d8d8de; --fg:#1b1b20; --dim:#6b6b76; --ok:#16a34a; --bad:#dc2626; --acc:#a16207; } }
+  * { box-sizing:border-box } body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.4 system-ui,sans-serif }
+  main { max-width:1000px; margin:0 auto; padding:16px }
+  header { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px }
+  h1 { font-size:20px; margin:0 } .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px }
+  .name { font-weight:600; font-size:16px } .dim { color:var(--dim); font-size:13px }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--bad); margin-right:6px }
+  .dot.on { background:var(--ok) } .dot.idle { background:var(--dim) }
+  button, select, input { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 10px }
+  button { cursor:pointer } button.primary { background:var(--acc); color:#111; border-color:var(--acc) } button:disabled { opacity:.5; cursor:default }
+  .tog { display:flex; align-items:center; gap:6px; font-size:13px } .msg { font-size:12px; margin-top:8px } .msg.err { color:var(--bad) }
+  code { display:block; padding:8px; background:var(--bg); border:1px solid var(--line); border-radius:6px; word-break:break-all; margin-top:6px; font-size:12px }
+  #login { max-width:360px; margin:80px auto }
+</style>
+</head>
+<body>
+<main>
+  <div id="login" class="card" hidden>
+    <div class="name">VPN Dashboard</div>
+    <div class="dim">Enter the API key.</div>
+    <div class="row"><input id="key" type="password" placeholder="API key" style="flex:1"><button class="primary" id="go">Open</button></div>
+  </div>
+  <div id="app" hidden>
+    <header>
+      <h1>VPN Dashboard</h1>
+      <div class="row" style="margin:0"><input id="newname" placeholder="New device name" maxlength="40"><button class="primary" id="add">Add device</button><button id="logout">Sign out</button></div>
+    </header>
+    <div id="notice"></div>
+    <div class="grid" id="grid"></div>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const store = { get(){ try { return localStorage.getItem('vpnkey') || '' } catch { return '' } }, set(v){ try { v ? localStorage.setItem('vpnkey', v) : localStorage.removeItem('vpnkey') } catch {} } };
+let key = store.get(), countries = [], timer;
+
+async function api(path, method = 'GET', body) {
+  const r = await fetch(path, { method, headers: { 'X-API-Key': key, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { show(false); throw new Error('Not signed in'); }
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function show(on) { $('#login').hidden = on; $('#app').hidden = !on; clearInterval(timer); if (on) { load(); timer = setInterval(load, 4000); } }
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const pretty = c => String(c || '').replace(/_/g, ' ');
+function ago(t) { if (!t) return 'never'; const s = Math.floor(Date.now()/1000) - t; return s < 90 ? s + 's ago' : s < 5400 ? Math.round(s/60) + 'm ago' : Math.round(s/3600) + 'h ago'; }
+
+function card(d) {
+  const s = d.status || {}, busy = d.inflight || d.pending.length;
+  const state = !d.online ? ['', 'offline'] : !s.nord_installed ? ['idle', 'Nord not installed'] : s.connected ? ['on', 'Connected · ' + pretty(s.country) + (s.city ? ', ' + esc(s.city) : '')] : ['idle', 'Disconnected'];
+  const last = d.results[0];
+  const opts = countries.map(c => `<option value="${c}" ${s.country && pretty(s.country) === pretty(c) ? 'selected' : ''}>${pretty(c)}</option>`).join('');
+  const dis = (!d.online || !s.nord_installed) ? 'disabled' : '';
+  return `<div class="card" data-id="${d.id}">
+    <div class="name"><span class="dot ${state[0]}"></span>${esc(d.name)}</div>
+    <div class="dim">${state[1]} · seen ${ago(d.last_seen)}${s.ip ? ' · ' + esc(s.ip) : ''}</div>
+    <div class="row"><select class="country" ${dis}>${opts}</select>
+      <button class="primary act" data-t="connect" ${dis}>Connect</button><button class="act" data-t="disconnect" ${dis}>Disconnect</button></div>
+    <div class="row">
+      <label class="tog"><input type="checkbox" class="tgl" data-t="killswitch" ${s.kill_switch ? 'checked' : ''} ${dis}> Kill switch</label>
+      <label class="tog"><input type="checkbox" class="tgl" data-t="pihole_dns" ${s.pihole_dns ? 'checked' : ''} ${dis}> Pi-hole DNS</label>
+      <label class="tog"><input type="checkbox" class="tgl" data-t="tailscale" ${s.tailscale === 'up' ? 'checked' : ''} ${(!d.online || s.tailscale === 'absent') ? 'disabled' : ''}> Tailscale</label>
+    </div>
+    ${busy ? '<div class="msg dim">Working…</div>' : last ? `<div class="msg ${last.ok ? 'dim' : 'err'}">${esc(last.message)} · ${ago(last.at)}</div>` : ''}
+    ${s.error ? `<div class="msg err">${esc(s.error)}</div>` : ''}
+    <div class="row"><button class="rot">New install token</button><button class="del">Remove</button></div>
+    <div class="out"></div>
+  </div>`;
+}
+
+async function load() {
+  try {
+    const j = await api('/api/v1/devices'); countries = j.countries;
+    if (document.activeElement && document.activeElement.closest && document.activeElement.closest('.card select')) return; // don't steal an open dropdown
+    $('#grid').innerHTML = j.devices.map(card).join('') || '<div class="dim">No devices yet. Add one above.</div>';
+    $('#notice').innerHTML = '';
+  } catch (e) { $('#notice').innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
+}
+const send = (id, body) => api(`/api/v1/devices/${id}/command`, 'POST', body).then(load).catch(e => alert(e.message));
+
+$('#grid').addEventListener('click', async e => {
+  const c = e.target.closest('.card'); if (!c) return; const id = c.dataset.id;
+  if (e.target.classList.contains('act')) {
+    const t = e.target.dataset.t;
+    send(id, t === 'connect' ? { type: 'connect', country: c.querySelector('.country').value } : { type: 'disconnect' });
+  } else if (e.target.classList.contains('del')) {
+    if (confirm('Remove ' + c.querySelector('.name').textContent + '? The agent will stop being able to connect.')) api('/api/v1/devices/' + id, 'DELETE').then(load).catch(e => alert(e.message));
+  } else if (e.target.classList.contains('rot')) {
+    api(`/api/v1/devices/${id}/token`, 'POST').then(j => c.querySelector('.out').innerHTML = '<div class="dim">Run on the device (old token stops working):</div><code>' + esc(j.install) + '</code>').catch(e => alert(e.message));
+  }
+});
+$('#grid').addEventListener('change', e => {
+  if (!e.target.classList.contains('tgl')) return;
+  send(e.target.closest('.card').dataset.id, { type: e.target.dataset.t, value: e.target.checked ? 'on' : 'off' });
+});
+$('#add').onclick = async () => {
+  const name = $('#newname').value.trim(); if (!name) return;
+  try {
+    const j = await api('/api/v1/devices', 'POST', { name }); $('#newname').value = '';
+    $('#notice').innerHTML = `<div class="card" style="margin-bottom:12px"><div class="name">${esc(j.device.name)} added</div><div class="dim">Run this once on the device. The token is shown only now.</div><code>${esc(j.install)}</code></div>`;
+    load();
+  } catch (e) { alert(e.message); }
+};
+$('#go').onclick = () => { key = $('#key').value.trim(); store.set(key); show(true); };
+$('#logout').onclick = () => { key = ''; store.set(''); show(false); };
+show(!!key);
+</script>
+</body>
+</html>
